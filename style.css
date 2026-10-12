@@ -1,0 +1,15 @@
+div:has(> canvas.vc-voice-spectrum) {
+    position: relative;
+    isolation: isolate;
+}
+
+.vc-voice-spectrum {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: -1;
+    border-radius: 4px;
+    color: var(--brand-500, #5865f2);
+}
