@@ -28,8 +28,19 @@ Goal of this fork: make it work on Discord desktop, if possible.
   `DiscordNative.nativeModules.requireModule("discord_voice")`. Also
   logs once per user when no analyser can be made for them, and why.
   This is temporary: remove once the desktop audio path is known.
-  Check it in Discord DevTools (Ctrl+Shift+I) > Console, filter
-  `VoiceSpectrum`, while in a voice channel with someone speaking.
+- Diagnostic log file (`native.ts` + the `Write diag log now` button
+  in plugin settings): every diagnostic line is also written to a
+  file, so the user can send the file instead of copying DevTools
+  console output. The native side (main process) writes to
+  `%APPDATA%\Vencord\voiceSpectrum-diag.log` on Discord desktop
+  (same folder as Vencord's settings), overwriting with the full
+  collected lines each time. Lines are written automatically when
+  they are logged (join a voice channel, get someone speaking), and
+  the settings button forces a fresh snapshot and writes it, showing
+  the path in a toast. Native access is lazy and guarded, so the
+  plugin still works on web where `VencordNative` does not exist —
+  there the button toasts that no native helper is available and no
+  file is written.
 
 ## What is known so far
 

@@ -7,11 +7,12 @@
 import "./style.css";
 
 import { definePluginSettings } from "@api/Settings";
+import { Button } from "@components/Button";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { Logger } from "@utils/Logger";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findStoreLazy } from "@webpack";
-import { MediaEngineStore, useEffect, useRef, UserStore, useState, useStateFromStores } from "@webpack/common";
+import { MediaEngineStore, showToast, useEffect, useRef, UserStore, useState, useStateFromStores } from "@webpack/common";
 
 const logger = new Logger("VoiceSpectrum");
 
@@ -59,6 +60,16 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Show a spectrum for your own microphone",
         default: true
+    },
+    // FORK: writes the collected diagnostic lines to
+    // %APPDATA%\Vencord\voiceSpectrum-diag.log via the native side.
+    writeDiagLog: {
+        type: OptionType.COMPONENT,
+        component: () => (
+            <Button onClick={() => void writeDiagFileNow()}>
+                Write diag log now
+            </Button>
+        )
     }
 });
 
@@ -98,6 +109,49 @@ function getDefaultConnection(): VoiceConnection | null {
     return found;
 }
 
+// FORK: diagnostic log file. Lines are collected here in the
+// renderer (the only place that can see the voice connection), then
+// handed to the native side to write to a file, so the user can send
+// the file instead of copying DevTools console output by hand.
+// Native access is lazy and guarded: VencordNative only exists on
+// desktop/Vesktop, not on web, and this plugin is universal.
+const diagLines: string[] = [];
+function pushDiag(label: string, data?: unknown) {
+    const line = `[${new Date().toISOString()}] ${label}${data === undefined ? "" : ": " + JSON.stringify(data)}`;
+    diagLines.push(line);
+    logger.warn(line);
+    void writeDiagFile();
+}
+const getNative = () => (globalThis as any).VencordNative?.pluginHelpers?.VoiceSpectrum as PluginNative<typeof import("./native")> | undefined;
+async function writeDiagFile() {
+    const native = getNative();
+    if (!native) return;
+    try {
+        const path = await native.writeDiagLog(diagLines.join("\n") + "\n");
+        logger.warn(`FORK diag: log file written to ${path}`);
+    } catch (e) {
+        logger.error("FORK diag: failed to write log file", e);
+    }
+}
+async function writeDiagFileNow() {
+    // Force a fresh connection snapshot first, so the file is useful
+    // even if nothing was logged yet (e.g. pressed before joining VC).
+    loggedConnection = false;
+    logConnection(getDefaultConnection());
+    const native = getNative();
+    if (!native) {
+        showToast({ text: "VoiceSpectrum: no native helper, diag log not written (web client?).", variant: "critical" });
+        return;
+    }
+    try {
+        const path = await native.writeDiagLog(diagLines.join("\n") + "\n");
+        showToast({ text: `VoiceSpectrum: diag log written to ${path}` });
+    } catch (e) {
+        logger.error("FORK diag: failed to write log file", e);
+        showToast({ text: `VoiceSpectrum: failed to write diag log: ${e instanceof Error ? e.message : String(e)}`, variant: "critical" });
+    }
+}
+
 // FORK: diagnostic logging to find what audio, if any, the desktop
 // native voice engine exposes. The upstream plugin only reads the web
 // voice engine (outputs with streamSourceNode / input MediaStream),
@@ -112,11 +166,11 @@ function logConnection(connection: VoiceConnection | null) {
     if (loggedConnection) return;
     loggedConnection = true;
     if (!connection) {
-        logger.warn("FORK diag: no default voice connection");
+        pushDiag("FORK diag: no default voice connection");
         return;
     }
     const outputs = connection.outputs ?? {};
-    logger.warn("FORK diag: connection", {
+    pushDiag("FORK diag: connection", {
         keys: Object.keys(connection),
         context: connection.context,
         hasAudioContext: !!connection.audioContext,
@@ -140,9 +194,9 @@ function logConnection(connection: VoiceConnection | null) {
     });
     try {
         const dv = (globalThis as any).DiscordNative?.nativeModules?.requireModule?.("discord_voice");
-        logger.warn("FORK diag: discord_voice module", dv ? Object.keys(dv) : "unavailable");
+        pushDiag("FORK diag: discord_voice module", dv ? Object.keys(dv) : "unavailable");
     } catch (e) {
-        logger.warn("FORK diag: discord_voice lookup failed", e);
+        pushDiag("FORK diag: discord_voice lookup failed", String(e));
     }
 }
 
@@ -156,7 +210,7 @@ function getAnalyser(userId: string): AnalyserNode | null {
         if (!stream?.getAudioTracks().length) {
             if (!loggedNoAnalyser.has(userId)) {
                 loggedNoAnalyser.add(userId);
-                logger.warn("FORK diag: no analyser for self, input stream missing or empty");
+                pushDiag("FORK diag: no analyser for self, input stream missing or empty");
             }
             return null;
         }
@@ -175,7 +229,7 @@ function getAnalyser(userId: string): AnalyserNode | null {
     if (!output || !source || output.mute) {
         if (!loggedNoAnalyser.has(userId)) {
             loggedNoAnalyser.add(userId);
-            logger.warn("FORK diag: no analyser for user", { userId, hasOutput: !!output, hasStreamSourceNode: !!source, mute: output?.mute });
+            pushDiag("FORK diag: no analyser for user", { userId, hasOutput: !!output, hasStreamSourceNode: !!source, mute: output?.mute });
         }
         return null;
     }
