@@ -8,9 +8,12 @@ import "./style.css";
 
 import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
+import { Logger } from "@utils/Logger";
 import definePlugin, { OptionType } from "@utils/types";
 import { findStoreLazy } from "@webpack";
 import { MediaEngineStore, useEffect, useRef, UserStore, useState, useStateFromStores } from "@webpack/common";
+
+const logger = new Logger("VoiceSpectrum");
 
 const SpeakingStore = findStoreLazy("SpeakingStore");
 
@@ -95,13 +98,68 @@ function getDefaultConnection(): VoiceConnection | null {
     return found;
 }
 
+// FORK: diagnostic logging to find what audio, if any, the desktop
+// native voice engine exposes. The upstream plugin only reads the web
+// voice engine (outputs with streamSourceNode / input MediaStream),
+// which does not exist on Discord desktop, so getAnalyser returns null
+// there and nothing draws. Log the connection shape once, plus the
+// discord_voice native module's keys if it is reachable, so the next
+// step can be chosen from evidence instead of guessing. Remove once
+// the desktop path is known.
+let loggedConnection = false;
+const loggedNoAnalyser = new Set<string>();
+function logConnection(connection: VoiceConnection | null) {
+    if (loggedConnection) return;
+    loggedConnection = true;
+    if (!connection) {
+        logger.warn("FORK diag: no default voice connection");
+        return;
+    }
+    const outputs = connection.outputs ?? {};
+    logger.warn("FORK diag: connection", {
+        keys: Object.keys(connection),
+        context: connection.context,
+        hasAudioContext: !!connection.audioContext,
+        outputIds: Object.keys(outputs),
+        outputs: Object.entries(outputs).map(([id, o]: [string, any]) => ({
+            id,
+            keys: Object.keys(o ?? {}),
+            hasAudioContext: !!o?.audioContext,
+            hasStreamSourceNode: !!o?.streamSourceNode,
+            mute: o?.mute
+        })),
+        input: {
+            hasInput: !!connection.input,
+            hasAudio: !!connection.input?.audio,
+            hasStream: !!connection.input?.audio?.stream,
+            tracks: connection.input?.audio?.stream?.getAudioTracks?.().length ?? null
+        },
+        isDiscordDesktop: IS_DISCORD_DESKTOP,
+        isVesktop: IS_VESKTOP,
+        isWeb: IS_WEB
+    });
+    try {
+        const dv = (globalThis as any).DiscordNative?.nativeModules?.requireModule?.("discord_voice");
+        logger.warn("FORK diag: discord_voice module", dv ? Object.keys(dv) : "unavailable");
+    } catch (e) {
+        logger.warn("FORK diag: discord_voice lookup failed", e);
+    }
+}
+
 function getAnalyser(userId: string): AnalyserNode | null {
     const connection = getDefaultConnection();
+    logConnection(connection);
     if (!connection) return null;
 
     if (userId === UserStore.getCurrentUser()?.id) {
         const stream = connection.input?.audio?.stream;
-        if (!stream?.getAudioTracks().length) return null;
+        if (!stream?.getAudioTracks().length) {
+            if (!loggedNoAnalyser.has(userId)) {
+                loggedNoAnalyser.add(userId);
+                logger.warn("FORK diag: no analyser for self, input stream missing or empty");
+            }
+            return null;
+        }
 
         let entry = inputAnalysers.get(stream);
         if (!entry) {
@@ -114,7 +172,13 @@ function getAnalyser(userId: string): AnalyserNode | null {
 
     const output = connection.outputs?.[userId];
     const source = output?.streamSourceNode;
-    if (!output || !source || output.mute) return null;
+    if (!output || !source || output.mute) {
+        if (!loggedNoAnalyser.has(userId)) {
+            loggedNoAnalyser.add(userId);
+            logger.warn("FORK diag: no analyser for user", { userId, hasOutput: !!output, hasStreamSourceNode: !!source, mute: output?.mute });
+        }
+        return null;
+    }
 
     let analyser = outputAnalysers.get(source);
     if (!analyser) {

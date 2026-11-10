@@ -1,5 +1,9 @@
 # voiceSpectrum-Vencord
 
+> Fork of https://git.c30.life/ced/voiceSpectrum-Vencord, trying to make
+> it work on the official Discord desktop client. See FORK.md for what
+> is known and what changed.
+
 A Vencord plugin that draws an audio visualizer behind users who are speaking in the voice channel list.
 
 ## Styles
